@@ -19,71 +19,108 @@
  * @module lib/jwk-store
  */
 
-import { JWK } from 'node-jose';
+import { randomBytes } from 'crypto';
+
+import {
+  generateKeyPair,
+  GenerateKeyPairOptions,
+} from 'jose/util/generate_key_pair';
+import { fromKeyLike } from 'jose/jwk/from_key_like';
+import type { JWK } from 'jose/types';
+
+const generateRandomKid = () => {
+  return randomBytes(40).toString('hex');
+};
+
+const normalizeKey = (
+  jwk: JWK,
+  alg?: string,
+  opts?: { kid?: string }
+): void => {
+  if (jwk.kid === undefined) {
+    if (opts !== undefined && opts.kid !== undefined) {
+      jwk.kid = opts.kid;
+    } else {
+      jwk.kid = generateRandomKid();
+    }
+  }
+
+  if (jwk.alg === undefined) {
+    if (alg === undefined) {
+      throw new Error('Unspecified alg');
+    }
+    jwk.alg = alg;
+  }
+};
 
 /**
- * Simplified wrapper class for [node-jose]{@link https://github.com/cisco/node-jose}'s keystore.
+ * Simple JWK store
  */
 export class JWKStore {
-  #store: JWK.KeyStore;
   #keyRotator: KeyRotator;
 
   /**
    * Creates a new instance of the keystore.
    */
   constructor() {
-    this.#store = JWK.createKeyStore();
     this.#keyRotator = new KeyRotator();
   }
 
   /**
-   * Generates a new random RSA key and adds it into this keystore.
+   * Generates a new random key and adds it into this keystore.
    *
-   * @param {number} [size] The size in bits of the new key. Default: 2048.
-   * @param {string} [kid] The key ID. If omitted, a new random 'kid' will be generated.
-   * @param {string} [use] The intended use of the key (e.g. 'sig', 'enc'.) Default: 'sig'.
-   * @returns {Promise<JWK.Key>} The promise for the generated key.
+   * @param {string} alg The selected algorithm.
+   * @param {object} [opts] The options.
+   * @param {string} [opts.kid] The key identifier to use.
+   * @param {string} [opts.crv] The OKP "crv" to be used for "EdDSA" algorithm.
+   * @returns {Promise<JWK>} The promise for the generated key.
    */
-  async generateRSA(
-    size?: number,
-    kid?: string,
-    use = 'sig'
-  ): Promise<JWK.Key> {
-    const key = await this.#store.generate('RSA', size, { kid, use });
-    this.#keyRotator.add(key);
-    return key;
+  async generate(
+    alg: string,
+    opts?: { kid?: string; crv?: string }
+  ): Promise<JWK> {
+    /*
+    https://www.scottbrady91.com/JOSE/JWTs-Which-Signing-Algorithm-Should-I-Use
+    https://connect2id.com/products/nimbus-jose-jwt/algorithm-selection-guide
+    https://tools.ietf.org/html/rfc7518#section-3.5
+    */
+    // TODO: whitelist alg
+
+    const generateOpts: GenerateKeyPairOptions =
+      opts !== undefined && opts.crv !== undefined ? { crv: opts.crv } : {};
+
+    const pair = await generateKeyPair(alg, generateOpts);
+    const jwk = await fromKeyLike(pair.privateKey);
+
+    normalizeKey(jwk, alg, opts);
+
+    this.#keyRotator.add(jwk);
+    return jwk;
   }
 
   /**
    * Adds a JWK key to this keystore.
    *
-   * @param {JWK.Key} jwk The JWK key to add.
-   * @returns {Promise<JWK.Key>} The promise for the added key.
+   * @param {JWK} jwk The JWK key to add.
+   * @returns {Promise<JWK>} The promise for the added key.
    */
-  async add(jwk: JWK.Key): Promise<JWK.Key> {
-    const jwkUse: JWK.Key = { ...jwk };
+  add(jwk: JWK): Promise<JWK> {
+    return new Promise((resolve, reject) => {
+      try {
+        const jwkUse: JWK = { ...jwk };
 
-    if (!('use' in jwkUse)) {
-      Object.assign(jwkUse, { use: 'sig' });
-    }
+        normalizeKey(jwkUse);
 
-    const key = await this.#store.add(jwkUse);
-    this.#keyRotator.add(key);
-    return key;
-  }
+        // TODO: assess can be properly deserialized
+        // - alg exist
+        // - toKeyLike() returns a private key
 
-  /**
-   * Adds a PEM-encoded RSA key to this keystore.
-   *
-   * @param {string} pem The PEM-encoded key to add.
-   * @param {string} [kid] The key ID. If omitted, a new random 'kid' will be generated.
-   * @param {string} [use] The intended use of the key (e.g. 'sig', 'enc'.) Default: 'sig'.
-   * @returns {Promise<JWK.Key>} The promise for the added key.
-   */
-  async addPEM(pem: string, kid?: string, use = 'sig'): Promise<JWK.Key> {
-    const key = await this.#store.add(pem, 'pem', { kid, use });
-    this.#keyRotator.add(key);
-    return key;
+        this.#keyRotator.add(jwkUse);
+        return resolve(jwkUse);
+      } catch (e) {
+        return reject(e);
+      }
+    });
   }
 
   /**
@@ -93,7 +130,8 @@ export class JWKStore {
    * @param {string} [kid] The optional key identifier to match keys against.
    * @returns {JWK.Key | null} The retrieved key.
    */
-  get(kid?: string): JWK.Key | null {
+  get(kid?: string): JWK | undefined {
+    // TODO: make this async
     return this.#keyRotator.next(kid);
   }
 
@@ -101,32 +139,52 @@ export class JWKStore {
    * Generates a JSON representation of this keystore, which conforms
    * to a JWK Set from {I-D.ietf-jose-json-web-key}.
    *
-   * @param {boolean} [isPrivate = false] `true` if the private fields
+   * @param {boolean} [includePrivateFields = false] `true` if the private fields
    *        of stored keys are to be included.
    * @returns {Object} The JSON representation of this keystore.
    */
-  toJSON(isPrivate?: boolean): Record<string, unknown> {
-    return this.#store.toJSON(isPrivate) as Record<string, unknown>;
+  toJSON(includePrivateFields = false): Record<string, unknown> {
+    // TODO: make this async
+    return this.#keyRotator.toJSON(includePrivateFields);
   }
 }
 
 class KeyRotator {
-  #keys: JWK.Key[] = [];
+  #keys: JWK[] = [];
 
-  add(key: JWK.Key): void {
-    if (!this.#keys.includes(key)) {
-      this.#keys.push(key);
+  add(key: JWK): void {
+    const pos = this.findNext(key.kid);
+
+    if (pos > -1) {
+      this.#keys.splice(pos, 1);
     }
+
+    this.#keys.push(key);
   }
 
-  next(kid?: string): JWK.Key | null {
+  next(kid?: string): JWK | undefined {
     const i = this.findNext(kid);
 
     if (i === -1) {
-      return null;
+      return undefined;
     }
 
     return this.moveToTheEnd(i);
+  }
+
+  toJSON(includePrivateFields: boolean): { keys: JWK[] } {
+    const keys: JWK[] = [];
+
+    // TODO: clean up extraction of public members depending of the key types
+    // cf. https://github.com/cisco/node-jose/search?q=describe%28%22%23publicKey
+    for (const key of this.#keys) {
+      const jwk = includePrivateFields
+        ? { ...key }
+        : { kid: key.kid, kty: key.kty, e: key.e, use: key.use, n: key.n };
+      keys.push(jwk);
+    }
+
+    return { keys };
   }
 
   private findNext(kid?: string): number {
@@ -134,21 +192,18 @@ class KeyRotator {
       return -1;
     }
 
-    if (!kid) {
+    if (kid === undefined) {
       return 0;
     }
 
     return this.#keys.findIndex((x) => x.kid === kid);
   }
 
-  private moveToTheEnd(i: number): JWK.Key {
-    // cf. https://github.com/typescript-eslint/typescript-eslint/pull/1645
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  private moveToTheEnd(i: number): JWK {
     const [key] = this.#keys.splice(i, 1);
 
     this.#keys.push(key);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return key;
   }
 }

@@ -57,7 +57,7 @@ console.log('Issuer URL:', server.issuer.url); // -> http://localhost:8080
 await server.stop();
 ```
 
-Any number of existing JSON-formatted or PEM-encoded keys can be added to the keystore:
+Any number of existing JSON-formatted or PEM-encoded keys can be added to the keystore: //TODO
 
 ```js
 // Add an existing JWK key to the keystore
@@ -80,7 +80,7 @@ JSON Web Tokens (JWT) can be built programmatically:
 const request = require('request');
 
 // Build a new token
-let token = server.issuer.buildToken(true);
+let token = server.issuer.buildToken();
 
 // Call a remote API with the token
 request.get(
@@ -211,4 +211,4 @@ npx oauth2-mock-server --help
 
 ## Attributions
 
-- [`node-jose`](https://www.npmjs.com/package/node-jose), Copyright © Cisco Systems
+- [`jose`](https://www.npmjs.com/package/jose)

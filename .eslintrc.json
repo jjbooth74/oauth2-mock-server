@@ -20,10 +20,21 @@
     "plugin:prettier/recommended"
   ],
   "rules": {
+    "curly": "warn",
+    "eqeqeq": "warn",
+    "semi": "warn",
     "jsdoc/require-jsdoc": [
       "warn",
       {
         "publicOnly": true
+      }
+    ],
+    "import/no-unresolved": [
+      "error",
+      {
+        "ignore": [
+          "^jose/"
+        ]
       }
     ]
   }
